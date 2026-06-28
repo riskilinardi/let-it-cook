@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Newsreader } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -25,6 +26,7 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${newsreader.variable}`}>
       <body className="bg-canvas font-sans text-ink antialiased">
         {children}
+        <Analytics />
       </body>
     </html>
   );
