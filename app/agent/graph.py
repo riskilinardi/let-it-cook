@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -5,9 +6,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
-from app.agent.llm import get_llm
+from app.agent.llm import get_llm, resilient
 from app.agent.state import AgentState
 from app.config import MAX_ITERATIONS, MAX_REVISIONS
+
+logger = logging.getLogger(__name__)
 
 
 PLANNER_PROMPT = """You are the planning step of a research assistant.
@@ -76,13 +79,16 @@ def make_agent(llm=None, tools=None):
         from app.agent.tools import TOOLS  # imported here so importing this module needs no keys
         tools = TOOLS
 
-    llm_with_tools = llm.bind_tools(tools)
-    reflector = llm.with_structured_output(Critique)
+    # wrap after binding, so the plain model, the tool-bound model and the
+    # structured-output reflector each retry a transient error on their own
+    model_plain = resilient(llm)
+    llm_with_tools = resilient(llm.bind_tools(tools))
+    reflector = resilient(llm.with_structured_output(Critique))
     tools_by_name = {t.name: t for t in tools}
 
     def plan(state: AgentState) -> dict:
         messages = [SystemMessage(content=PLANNER_PROMPT), HumanMessage(content=state["question"])]
-        return {"plan": llm.invoke(messages).content}
+        return {"plan": model_plain.invoke(messages).content}
 
     def reason(state: AgentState) -> dict:
         iterations = state["iterations"] + 1
@@ -91,15 +97,27 @@ def make_agent(llm=None, tools=None):
         )
         conversation = [system] + state["messages"]
         # at the cap, drop the tools so the model has to answer with what it has
-        model = llm if iterations > MAX_ITERATIONS else llm_with_tools
+        model = model_plain if iterations > MAX_ITERATIONS else llm_with_tools
         return {"messages": [model.invoke(conversation)], "iterations": iterations}
 
+    def run_tool(call: dict) -> ToolMessage:
+        # a failed tool comes back to the model as an error result instead of
+        # ending the run, so it can retry with other input or pick another tool
+        name = call["name"]
+        tool = tools_by_name.get(name)
+        if tool is None:
+            content = f"error: there is no tool called '{name}'. Available tools: {', '.join(tools_by_name)}."
+            return ToolMessage(content=content, tool_call_id=call["id"], name=name, status="error")
+        try:
+            output = tool.invoke(call["args"])
+        except Exception as exc:
+            logger.warning("tool %s failed", name, exc_info=True)
+            content = f"error: {name} failed ({type(exc).__name__}). Try different input or another tool."
+            return ToolMessage(content=content, tool_call_id=call["id"], name=name, status="error")
+        return ToolMessage(content=str(output), tool_call_id=call["id"], name=name)
+
     def act(state: AgentState) -> dict:
-        results = []
-        for call in state["messages"][-1].tool_calls:
-            output = tools_by_name[call["name"]].invoke(call["args"])
-            results.append(ToolMessage(content=str(output), tool_call_id=call["id"], name=call["name"]))
-        return {"messages": results}
+        return {"messages": [run_tool(call) for call in state["messages"][-1].tool_calls]}
 
     def reflect(state: AgentState) -> dict:
         draft = state["messages"][-1].content

@@ -1,6 +1,12 @@
 import json
+import logging
 
 from app.agent.graph import build_run_config, build_turn_input, get_agent
+
+logger = logging.getLogger(__name__)
+
+# What the visitor sees when a run fails. The details stay in the server log.
+STREAM_ERROR_MESSAGE = "Something went wrong while the agent was working on this. Please try again."
 
 
 def _events_from_update(node: str, update: dict) -> list[dict]:
@@ -57,9 +63,16 @@ async def stream_agent(question: str, thread_id: str):
     config = build_run_config(question, thread_id)
     turn_input = build_turn_input(question)
 
-    async for chunk in get_agent().astream(turn_input, config, stream_mode="updates"):
-        for node, update in chunk.items():
-            for event in _events_from_update(node, update):
-                yield _sse(event)
+    # the response has already started by the time anything here fails, so an
+    # exception can't become an HTTP error status. Send it as an event instead,
+    # so the client can show it in the turn rather than the stream just stopping.
+    try:
+        async for chunk in get_agent().astream(turn_input, config, stream_mode="updates"):
+            for node, update in chunk.items():
+                for event in _events_from_update(node, update):
+                    yield _sse(event)
+    except Exception:
+        logger.exception("agent run failed while streaming")
+        yield _sse({"type": "error", "message": STREAM_ERROR_MESSAGE})
 
     yield _sse({"type": "done"})
