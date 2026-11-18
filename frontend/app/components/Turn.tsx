@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Turn as TurnData } from "@/app/hooks/useAgentStream";
 import { Trace } from "./Trace";
 import ReactMarkdown from "react-markdown";
@@ -23,10 +23,13 @@ export function Turn({ turn, latest }: { turn: TurnData; latest: boolean }) {
   const hasReasoning = turn.plan !== null || turn.steps.length > 0;
 
   // tuck away a turn's reasoning once it is no longer the active one, so the
-  // conversation stays readable but the latest run is always open
-  useEffect(() => {
+  // conversation stays readable but the latest run is always open. done while
+  // rendering, when latest changes, rather than in an effect that would render twice
+  const [wasLatest, setWasLatest] = useState(latest);
+  if (latest !== wasLatest) {
+    setWasLatest(latest);
     if (!latest) setShowReasoning(false);
-  }, [latest]);
+  }
 
   return (
     <div className="rise border-t border-line py-8 first:border-t-0 first:pt-2">

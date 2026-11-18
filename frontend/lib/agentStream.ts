@@ -4,6 +4,7 @@ export type AgentEvent =
   | { type: "observation"; tool: string; result: string }
   | { type: "reflection"; note: string; approved: boolean }
   | { type: "answer"; answer: string }
+  | { type: "error"; message: string }
   | { type: "done" };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -16,6 +17,23 @@ function messageForStatus(status: number): string {
   if (status >= 500)
     return "The server had a problem. Please try again shortly.";
   return "Something went wrong reaching the agent. Please try again.";
+}
+
+// The daily cap won't clear in a few seconds, so show the server's own message
+// for it instead of the generic "busy" one.
+async function messageForResponse(response: Response): Promise<string> {
+  if (response.status === 429) {
+    const body = await response.json().catch(() => null);
+    if (body?.limit === "daily" && typeof body.detail === "string")
+      return body.detail;
+  }
+  return messageForStatus(response.status);
+}
+
+// The backend sleeps when idle and can take a minute to wake. Ping it on page
+// load so it is starting up before the first question. Fire and forget.
+export function wakeAgent(): void {
+  fetch(`${API_URL}/`).catch(() => {});
 }
 
 export async function* streamAgent(
@@ -31,7 +49,7 @@ export async function* streamAgent(
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(messageForStatus(response.status));
+    throw new Error(await messageForResponse(response));
   }
 
   const reader = response.body.getReader();

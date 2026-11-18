@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { wakeAgent } from "@/lib/agentStream";
 import { Turn } from "./components/Turn";
 import { useAgentStream } from "./hooks/useAgentStream";
 
@@ -15,6 +16,11 @@ export default function Home() {
   const [text, setText] = useState("");
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  // start waking the backend now, so it is up by the time the first question lands
+  useEffect(() => {
+    wakeAgent();
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -63,7 +69,7 @@ export default function Home() {
         </div>
         <p className="mt-4 max-w-lg leading-relaxed text-muted">
           An agent that plans, picks its tools, and reviews its own answer, with
-          every step shown. Ask it something and "Let It Cook".
+          every step shown. Ask it something and &quot;Let It Cook&quot;.
         </p>
 
         {empty ? (

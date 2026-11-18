@@ -96,8 +96,11 @@ function reducer(turns: Turn[], action: Action): Turn[] {
             };
           case "answer":
             return { ...t, answer: e.answer };
+          case "error":
+            return { ...t, status: "error", error: e.message };
           case "done":
-            return { ...t, status: "done" };
+            // an error event is followed by done; keep the turn marked as failed
+            return t.status === "error" ? t : { ...t, status: "done" };
           default:
             return t;
         }
@@ -108,11 +111,15 @@ function reducer(turns: Turn[], action: Action): Turn[] {
   }
 }
 
+const DROPPED_MESSAGE =
+  "The connection dropped before the answer finished. Please try again.";
+
 export function useAgentStream() {
   const [turns, dispatch] = useReducer(reducer, []);
-  const threadId = useRef<string>("");
+  // created on the first question rather than during render, since refs
+  // shouldn't be read or written while rendering
+  const threadId = useRef<string | null>(null);
   const controller = useRef<AbortController | null>(null);
-  if (!threadId.current) threadId.current = crypto.randomUUID();
 
   const busy =
     turns.length > 0 && turns[turns.length - 1].status === "thinking";
@@ -121,18 +128,24 @@ export function useAgentStream() {
     const question = raw.trim();
     if (!question) return;
 
+    threadId.current ??= crypto.randomUUID();
     controller.current?.abort();
     controller.current = new AbortController();
     dispatch({ kind: "ask", id: crypto.randomUUID(), question });
 
     try {
+      let finished = false;
       for await (const event of streamAgent(
         question,
         threadId.current,
         controller.current.signal,
       )) {
+        if (event.type === "done") finished = true;
         dispatch({ kind: "event", event });
       }
+      // the server always ends with done, so a stream that stops without one
+      // was cut off on the way (a restart or a proxy timeout)
+      if (!finished) dispatch({ kind: "error", message: DROPPED_MESSAGE });
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         dispatch({ kind: "error", message: (err as Error).message });
@@ -142,8 +155,8 @@ export function useAgentStream() {
 
   const reset = useCallback(() => {
     controller.current?.abort();
-    // Generate a new thread ID for the next conversation.
-    threadId.current = crypto.randomUUID();
+    // Start a new thread ID with the next conversation.
+    threadId.current = null;
     dispatch({ kind: "clear" });
   }, []);
 
